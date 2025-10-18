@@ -17,115 +17,136 @@ const clientsecret = "z8zP4PceM03Lff2";
 const MerchantId = "Tahira_Begum";
 
 let authToken = null;
+let tokenObtainedAt = 0;
+const TOKEN_TTL_MS = 10 * 60 * 1000; // 10 minutes heuristic
 
-// ============================
-// 1️⃣ Get Auth Token from PayPro
-// ============================
-app.get("/api/auth", async (req, res) => {
-  console.log("🔹 /api/auth called");
+function isTokenExpired() {
+  if (!authToken) return true;
+  return (Date.now() - tokenObtainedAt) > TOKEN_TTL_MS;
+}
+
+// Helper to obtain token (tries headers first, fallback to JSON fields)
+async function obtainToken() {
+  const resp = await fetch(PAYPRO_AUTH_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ clientid, clientsecret })
+  });
+
+  // debug headers
+  const headersObj = Object.fromEntries(resp.headers.entries());
+
+  const headerToken = resp.headers.get("token") || resp.headers.get("Token") || resp.headers.get("authorization");
+  let bodyJson = {};
   try {
-    const response = await fetch(PAYPRO_AUTH_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ clientid, clientsecret }),
-    });
+    bodyJson = await resp.json();
+  } catch (e) {
+    // ignore parse error
+  }
+  const tokenFromJson = bodyJson?.token || bodyJson?.Token || bodyJson?.Data?.Token || bodyJson?.data?.Token;
 
-    // Try to get token from headers first
-    const headerToken = response.headers.get("token");
-    const data = await response.json();
+  const final = headerToken || tokenFromJson;
+  if (!final) {
+    throw new Error("Auth token not found in headers or body. Headers: " + JSON.stringify(headersObj) + " Body: " + JSON.stringify(bodyJson));
+  }
 
-    if (headerToken) {
-      authToken = headerToken;
-      console.log("✅ Token retrieved from headers:", authToken);
-    } else if (data.token) {
-      authToken = data.token;
-      console.log("✅ Token retrieved from JSON:", authToken);
-    } else {
-      console.error("❌ No token found in response:", data);
-      return res.status(400).json({ error: "Token not found", details: data });
-    }
+  authToken = final;
+  tokenObtainedAt = Date.now();
+  return authToken;
+}
 
-    res.json({
-      message: "Token received successfully",
-      token: authToken,
-    });
+// Optional explicit auth endpoint (useful for debugging)
+app.get("/api/auth", async (req, res) => {
+  try {
+    const token = await obtainToken();
+    res.json({ message: "Token received", tokenSource: "header_or_json", token: token });
   } catch (err) {
-    console.error("🔥 Auth Error:", err);
+    console.error("/api/auth error:", err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// ============================
-// 2️⃣ Create PayPro Order
-// ============================
+// Create order endpoint: accepts { amount, customerName?, customerMobile?, customerEmail?, customerAddress? }
 app.post("/api/order", async (req, res) => {
-  const { amount } = req.body;
-  console.log("🔹 /api/order called");
-
   try {
-    if (!authToken) {
-      console.warn("⚠️ Missing auth token, call /api/auth first.");
-      return res.status(401).json({ error: "Not authenticated yet" });
-    }
+    const { amount, customerName, customerMobile, customerEmail, customerAddress } = req.body;
 
     if (!amount || isNaN(amount)) {
       return res.status(400).json({ error: "Invalid amount" });
     }
 
+    // Ensure token available and fresh (auto-refresh)
+    if (!authToken || isTokenExpired()) {
+      try {
+        await obtainToken();
+        console.log("✅ Auth token obtained (automatic refresh).");
+      } catch (err) {
+        console.error("Unable to obtain auth token:", err);
+        return res.status(500).json({ error: "Unable to obtain auth token", details: err.message });
+      }
+    }
     const orderData = [
       { MerchantId },
       {
         OrderNumber: "Order-" + Date.now(),
-        OrderAmount: amount.toString(),
+        CurrencyAmount: amount.toString(),
         OrderDueDate: "31/12/2025",
         OrderType: "Service",
-        IssueDate: "17/10/2025",
+        IssueDate: new Date().toISOString().split("T")[0], // yyyy-mm-dd
         OrderExpireAfterSeconds: "0",
-        CustomerName: "Customer",
-        CustomerMobile: "",
-        CustomerEmail: "",
-        CustomerAddress: "",
-      },
+        CustomerName: customerName || "Customer",
+        CustomerMobile: customerMobile || "",
+        CustomerEmail: customerEmail || "",
+        CustomerAddress: customerAddress || "",
+        Currency : "USD",
+        IsConverted  : "true"
+        
+      }
     ];
 
-    console.log("📦 Sending order data:", orderData);
+    console.log("📦 Creating order:", orderData);
 
-    const response = await fetch(PAYPRO_CREATE_ORDER_URL, {
+    const createResp = await fetch(PAYPRO_CREATE_ORDER_URL, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        token: authToken,
+        token: authToken
       },
-      body: JSON.stringify(orderData),
+      body: JSON.stringify(orderData)
     });
 
-    const data = await response.json();
+    // debug headers and body
+    const createHeaders = Object.fromEntries(createResp.headers.entries());
+    console.log("🔸 Create order headers:", createHeaders);
 
-    // ✅ Extract only meaningful info from response
-    const orderInfo = data?.[1] || {};
+    const createJson = await createResp.json();
+    console.log("✅ Raw create order response:", createJson);
+
+    // The API returns an array. We take [0] status and [1] details (guarded)
+    const statusObj = Array.isArray(createJson) ? createJson[0] : null;
+    const detailObj = Array.isArray(createJson) ? createJson[1] : (createJson?.Data || createJson);
+
+    // Build simplified result
     const simplified = {
-      status: data?.[0]?.Status || "Unknown",
-      payProId: orderInfo.PayProId,
-      orderNumber: orderInfo.OrderNumber,
-      orderAmount: orderInfo.OrderAmount,
-      click2Pay: orderInfo.Click2Pay,
-      iframeClick2Pay: orderInfo.IframeClick2Pay,
-      billUrl: orderInfo.BillUrl,
-      shortBillUrl: orderInfo.short_BillUrl,
-      createdOn: orderInfo.Created_on,
+      status: statusObj?.Status || statusObj?.ResponseCode || (createJson?.ResponseCode ?? "Unknown"),
+      payProId: detailObj?.PayProId ?? detailObj?.ConnectPayId ?? null,
+      orderNumber: detailObj?.OrderNumber ?? detailObj?.OrderNo ?? null,
+      orderAmount: detailObj?.OrderAmount ?? null,
+      click2Pay: detailObj?.Click2Pay ?? null,
+      iframeClick2Pay: detailObj?.IframeClick2Pay ?? detailObj?.IframeClickToPay ?? null,
+      billUrl: detailObj?.BillUrl ?? null,
+      shortBillUrl: detailObj?.short_BillUrl ?? detailObj?.shortBillUrl ?? null,
+      createdOn: detailObj?.Created_on ?? detailObj?.CreatedOn ?? null,
+      raw: createJson // include raw fallback for debugging if needed
     };
 
-    console.log("✅ Simplified Order Response:", simplified);
-    res.json(simplified);
+    return res.json(simplified);
   } catch (err) {
-    console.error("🔥 Order Error:", err);
-    res.status(500).json({ error: err.message });
+    console.error("/api/order error:", err);
+    return res.status(500).json({ error: err.message });
   }
 });
 
-// ============================
-// Server Start
-// ============================
-app.listen(3000, () =>
-  console.log("🚀 Server running at: http://localhost:3000")
-);
+// Start server
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`🚀 Server running on http://localhost:${PORT}`));
