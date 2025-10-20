@@ -105,7 +105,7 @@ app.post("/api/order", async (req, res) => {
         CustomerEmail: customerEmail || "",
         CustomerAddress: customerAddress || "",
         Currency: currency, // ✅ use selected currency
-        IsConverted: "true" // ✅ tells PayPro that currency is converted
+        IsConverted: currency=='PKR'?"false": "true" // ✅ tells PayPro that currency is converted
       }
     ];
 
