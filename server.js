@@ -91,7 +91,19 @@ app.post("/api/order", async (req, res) => {
     }
 
     // Build order data
-    const orderData = [
+    const orderData = currency=='PKR'?[ { MerchantId },
+      {
+        OrderNumber: "Order-" + Date.now(),
+        OrderAmount: amount.toString(),
+        OrderDueDate: "31/12/2025",
+        OrderType: "Service",
+        IssueDate: new Date().toISOString().split("T")[0],
+        OrderExpireAfterSeconds: "0",
+        CustomerName: customerName || "Customer",
+        CustomerMobile: customerMobile || "",
+        CustomerEmail: customerEmail || "",
+        CustomerAddress: customerAddress || "",
+      }]: [
       { MerchantId },
       {
         OrderNumber: "Order-" + Date.now(),
@@ -105,7 +117,7 @@ app.post("/api/order", async (req, res) => {
         CustomerEmail: customerEmail || "",
         CustomerAddress: customerAddress || "",
         Currency: currency, // ✅ use selected currency
-        IsConverted: currency=='PKR'?"false": "true" // ✅ tells PayPro that currency is converted
+        IsConverted:  "true" // ✅ tells PayPro that currency is converted
       }
     ];
 
