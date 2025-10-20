@@ -25,7 +25,7 @@ function isTokenExpired() {
   return (Date.now() - tokenObtainedAt) > TOKEN_TTL_MS;
 }
 
-// Helper to obtain token (tries headers first, fallback to JSON fields)
+// Helper to obtain token
 async function obtainToken() {
   const resp = await fetch(PAYPRO_AUTH_URL, {
     method: "POST",
@@ -33,19 +33,17 @@ async function obtainToken() {
     body: JSON.stringify({ clientid, clientsecret })
   });
 
-  // debug headers
   const headersObj = Object.fromEntries(resp.headers.entries());
 
   const headerToken = resp.headers.get("token") || resp.headers.get("Token") || resp.headers.get("authorization");
   let bodyJson = {};
   try {
     bodyJson = await resp.json();
-  } catch (e) {
-    // ignore parse error
-  }
-  const tokenFromJson = bodyJson?.token || bodyJson?.Token || bodyJson?.Data?.Token || bodyJson?.data?.Token;
+  } catch (e) {}
 
+  const tokenFromJson = bodyJson?.token || bodyJson?.Token || bodyJson?.Data?.Token || bodyJson?.data?.Token;
   const final = headerToken || tokenFromJson;
+
   if (!final) {
     throw new Error("Auth token not found in headers or body. Headers: " + JSON.stringify(headersObj) + " Body: " + JSON.stringify(bodyJson));
   }
@@ -55,27 +53,33 @@ async function obtainToken() {
   return authToken;
 }
 
-// Optional explicit auth endpoint (useful for debugging)
+// Explicit auth endpoint
 app.get("/api/auth", async (req, res) => {
   try {
     const token = await obtainToken();
-    res.json({ message: "Token received", tokenSource: "header_or_json", token: token });
+    res.json({ message: "Token received", token });
   } catch (err) {
     console.error("/api/auth error:", err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// Create order endpoint: accepts { amount, customerName?, customerMobile?, customerEmail?, customerAddress? }
+// --------------------
+// Create Order Endpoint
+// --------------------
 app.post("/api/order", async (req, res) => {
   try {
-    const { amount, customerName, customerMobile, customerEmail, customerAddress } = req.body;
+    const { amount, currency, customerName, customerMobile, customerEmail, customerAddress } = req.body;
 
     if (!amount || isNaN(amount)) {
       return res.status(400).json({ error: "Invalid amount" });
     }
 
-    // Ensure token available and fresh (auto-refresh)
+    if (!currency || typeof currency !== "string") {
+      return res.status(400).json({ error: "Currency is required (e.g., USD, PKR, EUR)" });
+    }
+
+    // Ensure token available and fresh
     if (!authToken || isTokenExpired()) {
       try {
         await obtainToken();
@@ -85,6 +89,8 @@ app.post("/api/order", async (req, res) => {
         return res.status(500).json({ error: "Unable to obtain auth token", details: err.message });
       }
     }
+
+    // Build order data
     const orderData = [
       { MerchantId },
       {
@@ -92,15 +98,14 @@ app.post("/api/order", async (req, res) => {
         CurrencyAmount: amount.toString(),
         OrderDueDate: "31/12/2025",
         OrderType: "Service",
-        IssueDate: new Date().toISOString().split("T")[0], // yyyy-mm-dd
+        IssueDate: new Date().toISOString().split("T")[0],
         OrderExpireAfterSeconds: "0",
         CustomerName: customerName || "Customer",
         CustomerMobile: customerMobile || "",
         CustomerEmail: customerEmail || "",
         CustomerAddress: customerAddress || "",
-        Currency : "USD",
-        IsConverted  : "true"
-        
+        Currency: currency, // ✅ use selected currency
+        IsConverted: "true" // ✅ tells PayPro that currency is converted
       }
     ];
 
@@ -115,18 +120,15 @@ app.post("/api/order", async (req, res) => {
       body: JSON.stringify(orderData)
     });
 
-    // debug headers and body
     const createHeaders = Object.fromEntries(createResp.headers.entries());
     console.log("🔸 Create order headers:", createHeaders);
 
     const createJson = await createResp.json();
     console.log("✅ Raw create order response:", createJson);
 
-    // The API returns an array. We take [0] status and [1] details (guarded)
     const statusObj = Array.isArray(createJson) ? createJson[0] : null;
     const detailObj = Array.isArray(createJson) ? createJson[1] : (createJson?.Data || createJson);
 
-    // Build simplified result
     const simplified = {
       status: statusObj?.Status || statusObj?.ResponseCode || (createJson?.ResponseCode ?? "Unknown"),
       payProId: detailObj?.PayProId ?? detailObj?.ConnectPayId ?? null,
@@ -137,7 +139,7 @@ app.post("/api/order", async (req, res) => {
       billUrl: detailObj?.BillUrl ?? null,
       shortBillUrl: detailObj?.short_BillUrl ?? detailObj?.shortBillUrl ?? null,
       createdOn: detailObj?.Created_on ?? detailObj?.CreatedOn ?? null,
-      raw: createJson // include raw fallback for debugging if needed
+      raw: createJson
     };
 
     return res.json(simplified);
