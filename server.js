@@ -147,7 +147,7 @@ app.post("/api/order", async (req, res) => {
       orderNumber: detailObj?.OrderNumber ?? detailObj?.OrderNo ?? null,
       orderAmount: detailObj?.OrderAmount ?? null,
       click2Pay: detailObj?.Click2Pay ?? null,
-      iframeClick2Pay: detailObj?.IframeClick2Pay ?? detailObj?.IframeClickToPay ?? null,
+      iframeClick2Pay: detailObj?.Click2Pay ?? detailObj?.Click2Pay ?? null,
       billUrl: detailObj?.BillUrl ?? null,
       shortBillUrl: detailObj?.short_BillUrl ?? detailObj?.shortBillUrl ?? null,
       createdOn: detailObj?.Created_on ?? detailObj?.CreatedOn ?? null,
